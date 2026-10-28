@@ -1,0 +1,281 @@
+openapi: 3.0.3
+info:
+  title: Provenance warranty off-chain API
+  version: 0.1.0
+  description: >
+    Frozen local API. Plaintext serials, model names, fault text, and service notes
+    live here. The chain stores only the hashes produced by shared/hash.js.
+    Normative hash rules are in 接口说明.md. Do not add authentication and do not
+    store personal names, phone numbers, or addresses.
+servers:
+  - url: http://127.0.0.1:3001
+paths:
+  /health:
+    get:
+      operationId: health
+      responses:
+        "200":
+          description: Server is up.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [ok]
+                properties:
+                  ok:
+                    type: boolean
+                    enum: [true]
+  /products:
+    post:
+      operationId: createProduct
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateProductBody"
+      responses:
+        "201":
+          description: Stored. Hashes must come from shared/hash.js.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductRecord"
+        "400":
+          description: Empty serial or model name, or a body that is not the schema.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OffchainError"
+        "409":
+          description: This trimmed serial was already stored.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SerialExists"
+  /products/{serialHash}:
+    get:
+      operationId: getProduct
+      parameters:
+        - $ref: "#/components/parameters/SerialHash"
+      responses:
+        "200":
+          description: Stored product plaintext.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProductRecord"
+        "404":
+          description: Unknown serial hash.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OffchainError"
+  /claims:
+    post:
+      operationId: createClaimReason
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateClaimReasonBody"
+      responses:
+        "201":
+          description: Stored. reasonHash is keccak256 of the raw reasonText, without trim.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimReasonRecord"
+        "400":
+          description: Empty reasonText, or productId is not a positive decimal string.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OffchainError"
+  /claims/{reasonHash}:
+    get:
+      operationId: getClaimReason
+      parameters:
+        - $ref: "#/components/parameters/ReasonHash"
+      responses:
+        "200":
+          description: Stored fault text.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ClaimReasonRecord"
+        "404":
+          description: Unknown reason hash.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OffchainError"
+  /notes:
+    post:
+      operationId: createNote
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateNoteBody"
+      responses:
+        "201":
+          description: Stored. Empty noteText is rejected. The client uses the zero bytes32 instead.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteRecord"
+        "400":
+          description: Empty noteText.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OffchainError"
+  /notes/{noteHash}:
+    get:
+      operationId: getNote
+      parameters:
+        - $ref: "#/components/parameters/NoteHash"
+      responses:
+        "200":
+          description: Stored service note.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/NoteRecord"
+        "404":
+          description: Unknown note hash.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OffchainError"
+components:
+  parameters:
+    SerialHash:
+      name: serialHash
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/Bytes32"
+    ReasonHash:
+      name: reasonHash
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/Bytes32"
+    NoteHash:
+      name: noteHash
+      in: path
+      required: true
+      schema:
+        $ref: "#/components/schemas/Bytes32"
+  schemas:
+    Bytes32:
+      type: string
+      pattern: "^0x[0-9a-fA-F]{64}$"
+      description: Lookup keys are lowercased before they are compared. Responses use lowercase.
+    DecimalString:
+      type: string
+      pattern: "^[0-9]+$"
+    ProductId:
+      type: string
+      pattern: "^[1-9][0-9]*$"
+    CreateProductBody:
+      type: object
+      additionalProperties: false
+      required: [serial, modelName]
+      properties:
+        serial:
+          type: string
+          minLength: 1
+        modelName:
+          type: string
+          minLength: 1
+        description:
+          type: string
+    ProductRecord:
+      type: object
+      additionalProperties: false
+      required: [serialHash, modelId, modelName, description, createdAt]
+      properties:
+        serialHash:
+          $ref: "#/components/schemas/Bytes32"
+        modelId:
+          $ref: "#/components/schemas/DecimalString"
+        modelName:
+          type: string
+        description:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    CreateClaimReasonBody:
+      type: object
+      additionalProperties: false
+      required: [productId, reasonText]
+      properties:
+        productId:
+          $ref: "#/components/schemas/ProductId"
+        reasonText:
+          type: string
+          minLength: 1
+    ClaimReasonRecord:
+      type: object
+      additionalProperties: false
+      required: [productId, reasonHash, reasonText, createdAt]
+      properties:
+        productId:
+          $ref: "#/components/schemas/ProductId"
+        reasonHash:
+          $ref: "#/components/schemas/Bytes32"
+        reasonText:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    CreateNoteBody:
+      type: object
+      additionalProperties: false
+      required: [noteText]
+      properties:
+        noteText:
+          type: string
+          minLength: 1
+    NoteRecord:
+      type: object
+      additionalProperties: false
+      required: [noteHash, noteText, createdAt]
+      properties:
+        noteHash:
+          $ref: "#/components/schemas/Bytes32"
+        noteText:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+    OffchainError:
+      type: object
+      additionalProperties: false
+      required: [error, message]
+      properties:
+        error:
+          type: string
+          enum: [empty_field, invalid_body, not_found]
+        message:
+          type: string
+    SerialExists:
+      type: object
+      additionalProperties: false
+      required: [error, message, serialHash, modelId]
+      properties:
+        error:
+          type: string
+          enum: [serial_exists]
+        message:
+          type: string
+        serialHash:
+          $ref: "#/components/schemas/Bytes32"
+        modelId:
+          $ref: "#/components/schemas/DecimalString"

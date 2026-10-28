@@ -1,0 +1,9 @@
+node_modules/
+cache/
+artifacts/
+typechain-types/
+dist/
+deployments/local.json
+offchain/data.json
+.env
+*.log
