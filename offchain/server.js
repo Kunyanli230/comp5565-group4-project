@@ -13,7 +13,7 @@ const PRODUCT_ID = /^[1-9][0-9]*$/;
 const MAX_BODY_BYTES = 1024 * 1024;
 
 function emptyStore() {
-  return { products: {}, claims: {}, notes: {} };
+  return { products: {}, claims: {}, claimProducts: {}, notes: {} };
 }
 
 function loadStore(dataFile) {
@@ -22,6 +22,7 @@ function loadStore(dataFile) {
   return {
     products: parsed.products && typeof parsed.products === "object" ? parsed.products : {},
     claims: parsed.claims && typeof parsed.claims === "object" ? parsed.claims : {},
+    claimProducts: parsed.claimProducts && typeof parsed.claimProducts === "object" ? parsed.claimProducts : {},
     notes: parsed.notes && typeof parsed.notes === "object" ? parsed.notes : {},
   };
 }
@@ -77,7 +78,12 @@ function readJson(request) {
     });
     request.on("end", () => {
       try {
-        resolve(JSON.parse(raw));
+        resolve(JSON.parse(raw, (key, value) => {
+          if (typeof value === "string" && !value.isWellFormed()) {
+            throw new Error("Text must contain valid Unicode");
+          }
+          return value;
+        }));
       } catch {
         reject(new Error("request body must be valid JSON"));
       }
@@ -101,9 +107,18 @@ function publicProduct(record) {
 }
 
 function createHandler({ dataFile = DEFAULT_DATA_FILE } = {}) {
-  const store = loadStore(dataFile);
+  let store = loadStore(dataFile);
+  // Preserve legacy records and index each product separately without changing hashes.
+  for (const [hash, record] of Object.entries(store.claims)) {
+    store.claimProducts[hash] ??= {};
+    store.claimProducts[hash][record.productId] ??= record;
+  }
+  function commit(next) {
+    saveStore(dataFile, next);
+    store = next; // A failed disk write must not create phantom in-memory records.
+  }
 
-  return async function handler(request, response) {
+  async function dispatch(request, response) {
     const origin = request.headers.origin;
     const headers = corsHeaders(origin);
 
@@ -118,8 +133,14 @@ function createHandler({ dataFile = DEFAULT_DATA_FILE } = {}) {
       return;
     }
 
-    const url = new URL(request.url, `http://${request.headers.host || `${HOST}:${PORT}`}`);
-    const pathname = decodeURIComponent(url.pathname);
+    let url, pathname;
+    try {
+      url = new URL(request.url, `http://${HOST}:${PORT}`);
+      pathname = decodeURIComponent(url.pathname);
+    } catch {
+      sendError(response, 400, "invalid_body", "Invalid request URL", {}, headers);
+      return;
+    }
 
     if (request.method === "GET" && pathname === "/health") {
       sendJson(response, 200, { ok: true }, headers);
@@ -170,8 +191,7 @@ function createHandler({ dataFile = DEFAULT_DATA_FILE } = {}) {
         description: body.description ?? "",
         createdAt: new Date().toISOString(),
       };
-      store.products[serialKey] = record;
-      saveStore(dataFile, store);
+      commit({ ...store, products: { ...store.products, [serialKey]: record } });
       sendJson(response, 201, publicProduct(record), headers);
       return;
     }
@@ -218,16 +238,30 @@ function createHandler({ dataFile = DEFAULT_DATA_FILE } = {}) {
         reasonText: body.reasonText,
         createdAt: new Date().toISOString(),
       };
-      store.claims[key] = record;
-      saveStore(dataFile, store);
-      sendJson(response, 201, record, headers);
+      const records = store.claimProducts[key] ?? {};
+      const saved = records[body.productId] ?? record;
+      commit({ ...store,
+        claims: { ...store.claims, [key]: store.claims[key] ?? saved },
+        claimProducts: { ...store.claimProducts, [key]: { ...records, [body.productId]: saved } },
+      });
+      sendJson(response, 201, saved, headers);
       return;
     }
 
     const claimMatch = pathname.match(/^\/claims\/([^/]+)$/);
     if (request.method === "GET" && claimMatch) {
       const key = normalizeHash(claimMatch[1]);
-      const record = key ? store.claims[key] : undefined;
+      const records = key ? store.claimProducts[key] : undefined;
+      const productId = url.searchParams.get("productId");
+      if (productId !== null && !PRODUCT_ID.test(productId)) {
+        sendError(response, 400, "invalid_body", "productId must be a positive decimal string", {}, headers);
+        return;
+      }
+      if (productId === null && records && Object.keys(records).length > 1) {
+        sendError(response, 400, "invalid_body", "Multiple products share this reason; supply ?productId=...", {}, headers);
+        return;
+      }
+      const record = records ? (productId === null ? Object.values(records)[0] : records[productId]) : undefined;
       if (!record) {
         sendError(response, 404, "not_found", "Claim reason was not found", {}, headers);
         return;
@@ -259,8 +293,7 @@ function createHandler({ dataFile = DEFAULT_DATA_FILE } = {}) {
         noteText: body.noteText,
         createdAt: new Date().toISOString(),
       };
-      store.notes[key] = record;
-      saveStore(dataFile, store);
+      commit({ ...store, notes: { ...store.notes, [key]: record } });
       sendJson(response, 201, record, headers);
       return;
     }
@@ -278,6 +311,17 @@ function createHandler({ dataFile = DEFAULT_DATA_FILE } = {}) {
     }
 
     sendError(response, 404, "not_found", "Route was not found", {}, headers);
+  }
+  return async function handler(request, response) {
+    try {
+      await dispatch(request, response);
+    } catch {
+      // Never expose filesystem details or let one request stop the API process.
+      if (!response.destroyed && !response.writableEnded) {
+        if (response.headersSent) response.destroy();
+        else sendError(response, 500, "internal_error", "Unable to complete request", {}, corsHeaders(request.headers.origin));
+      }
+    }
   };
 }
 

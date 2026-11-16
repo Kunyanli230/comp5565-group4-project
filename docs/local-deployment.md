@@ -1,6 +1,6 @@
 # Local deployment and integration
 
-Use the merged `main` source. The final integration check on 2026-11-13 used commit `e80ef8402f472e94a2a0f42b9e2a5093938d1dc8`, which includes PR #2 and PR #3. It contains both ProductRegistry and WarrantyManager implementations, the deployment scripts and the off-chain service. All commands run from the repository root; use separate terminals for the chain and API.
+Use the deployment handoff PR branch until its fixes are merged, then use `main`. The final integration check on 2026-11-13 used commit `e80ef8402f472e94a2a0f42b9e2a5093938d1dc8`, which includes PR #2 and PR #3. It contains both ProductRegistry and WarrantyManager implementations, the deployment scripts and the off-chain service. All commands run from the repository root; use separate terminals for the chain and API.
 
 The off-chain API is implemented with Node.js built-in `node:http` and stores data in a local JSON file. It does not use Express. The API is a separate required process; starting the chain or deploying contracts does not start it.
 
@@ -49,3 +49,23 @@ On 2026-11-13, a fresh local snapshot of merged main `e80ef8402f472e94a2a0f42b9e
 All 32 non-PDF files in the verification snapshot matched the final commit's Git blob hashes. The repository's course PDF was not needed for execution. The contracts and their tests were unchanged from the 2026-11-11 run, which passed 34 contract/interface tests and 12 API/seed tests; those suites were not rerun solely for the merge. The final acceptance run reused the existing dependency installation and Solidity 0.8.24 build after checking every compilation input against the snapshot. A clean `npm ci` installation was not revalidated in that run.
 
 The test chain and API were stopped after acceptance. Browser rendering, wallet connections and frontend-to-contract/API calls remain pending until the frontend is delivered; the backend acceptance above does not verify those interactions.
+
+
+## 2026-11-16 final service fixes and client handoff
+
+The earlier installation caveat above is superseded: on Windows x64 / Node 24.16.0 / npm 11.13.0, a clean npm ci installed 375 packages from the unchanged lockfile; Solidity 0.8.24 was freshly downloaded and 13 sources compiled. 34 contract/interface tests passed. After these fixes, all 16 API/seed tests and all 8 real deployment/lifecycle checkpoints passed. Test processes were stopped. No frontend is delivered in the reviewed main, so browser/wallet acceptance is still pending.
+
+### Error recovery
+Malformed URL encoding and ill-formed Unicode return HTTP 400 / invalid_body without terminating the service. Valid Chinese and emoji remain supported. Unexpected storage failures return HTTP 500 / internal_error without exposing local paths; the in-memory state is committed only after disk persistence succeeds. Retry after fixing the storage problem does not encounter phantom records.
+
+### Multiple products with identical fault text
+The canonical reasonHash algorithm and all on-chain interfaces are unchanged. Off-chain storage indexes records by both reasonHash and productId, preserves each product's creation timestamp on retries, and reads existing data.json files automatically without deleting them.
+
+Frontend code should always read fault text with:
+
+GET /claims/{reasonHash}?productId={claim.productId}
+
+Use the productId returned by the on-chain getClaim result; keep it as a decimal string. POST /claims and the response fields are unchanged. Existing hash-only GET calls continue to work for a unique product. When several products share a reason, hash-only GET returns HTTP 400 / invalid_body rather than guessing the product; add productId and retry. An unknown product association returns 404. The shared OpenAPI v0.1.1 documents this additive query and error handling. This is an explicit integration change for reviewer approval; clients must not treat reasonHash alone as a product identity. Old links already overwritten by the old service cannot be reconstructed from the current file; restore them from a trusted backup or re-post the known product/reason pair. No existing data is silently erased.
+
+### Report and presentation alignment
+Report Table 1 and section 5.2.3 should say Node.js built-in HTTP service, not Express. Section 5.2.3 must explicitly start npm run offchain before npm run seed:local. The shared presentation's two deployment slides and bilingual notes describe the updated service. Keep the presentation concise; frontend/wallet completion must only be claimed after those flows are actually tested.

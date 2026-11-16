@@ -1,10 +1,12 @@
 openapi: 3.0.3
 info:
   title: Provenance warranty off-chain API
-  version: 0.1.0
+  version: 0.1.1
   description: >
     Frozen local API. Plaintext serials, model names, fault text, and service notes
     live here. The chain stores only the hashes produced by shared/hash.js.
+    Unexpected storage failures return HTTP 500 with error internal_error.
+    Invalid Unicode or URL encoding returns HTTP 400 with error invalid_body.
     Normative hash rules are in 接口说明.md. Do not add authentication and do not
     store personal names, phone numbers, or addresses.
 servers:
@@ -98,15 +100,27 @@ paths:
       operationId: getClaimReason
       parameters:
         - $ref: "#/components/parameters/ReasonHash"
+        - name: productId
+          in: query
+          required: false
+          description: Required when multiple products share the same reasonHash.
+          schema:
+            $ref: "#/components/schemas/ProductId"
       responses:
         "200":
-          description: Stored fault text.
+          description: Stored fault text for one product. Legacy hash-only queries work when unambiguous.
           content:
             application/json:
               schema:
                 $ref: "#/components/schemas/ClaimReasonRecord"
         "404":
           description: Unknown reason hash.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/OffchainError"
+        "400":
+          description: Invalid productId or ambiguous hash-only lookup; supply productId.
           content:
             application/json:
               schema:
@@ -262,7 +276,7 @@ components:
       properties:
         error:
           type: string
-          enum: [empty_field, invalid_body, not_found]
+          enum: [empty_field, invalid_body, not_found, internal_error]
         message:
           type: string
     SerialExists:
