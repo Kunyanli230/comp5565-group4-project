@@ -40,7 +40,8 @@ export type OffchainErrorCode =
   | "empty_field"
   | "invalid_body"
   | "serial_exists"
-  | "not_found";
+  | "not_found"
+  | "internal_error";
 
 export interface OffchainErrorBody {
   error: OffchainErrorCode;

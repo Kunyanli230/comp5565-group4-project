@@ -200,3 +200,73 @@ test("未知或格式错误的哈希查询应返回统一的 not_found 错误", 
   }
 });
 
+test("坏URL和非法Unicode不能中断服务，合法中文与emoji仍可存储", async () => {
+  for (const route of ["/products/%", "/claims/%FF"]) {
+    const bad = await request(route);
+    assert.equal(bad.response.status, 400);
+    assert.equal(bad.body.error, "invalid_body");
+    assert.equal((await request("/health")).response.status, 200);
+  }
+  for (const [route, body] of [
+    ["/products", { serial: "BAD-\ud800", modelName: "Watch" }],
+    ["/products", { serial: "VALID", modelName: "\udc00" }],
+    ["/claims", { productId: "1", reasonText: "\ud800" }],
+    ["/notes", { noteText: "\ud800" }],
+  ]) {
+    const bad = await request(route, { method: "POST", body: JSON.stringify(body) });
+    assert.equal(bad.response.status, 400);
+    assert.equal(bad.body.error, "invalid_body");
+    assert.equal((await request("/health")).response.status, 200);
+  }
+  const good = await request("/notes", { method: "POST", body: JSON.stringify({ noteText: "维修完成 ⌚😀" }) });
+  assert.equal(good.response.status, 201);
+  assert.equal(good.body.noteHash, noteHash("维修完成 ⌚😀"));
+});
+
+test("相同原因的多产品记录独立保存并在重启后可准确查询", async () => {
+  const reasonText = "Same fault";
+  const post = productId => request("/claims", { method: "POST", body: JSON.stringify({ productId, reasonText }) });
+  const first = await post("1");
+  const second = await post("2");
+  assert.equal(first.response.status, 201);
+  assert.equal(second.response.status, 201);
+  assert.equal(first.body.reasonHash, second.body.reasonHash);
+  assert.deepEqual((await post("1")).body, first.body);
+  await stopServer();
+  await startServer();
+  const route = `/claims/${first.body.reasonHash}`;
+  assert.deepEqual((await request(route + "?productId=1")).body, first.body);
+  assert.deepEqual((await request(route + "?productId=2")).body, second.body);
+  assert.equal((await request(route)).response.status, 400);
+  assert.equal((await request(route + "?productId=3")).response.status, 404);
+  assert.equal((await request(route + "?productId=01")).response.status, 400);
+});
+
+test("旧版本数据自动兼容，新产品不得覆盖旧关联", async () => {
+  await stopServer();
+  const reasonText = "Legacy fault";
+  const hash = reasonHash(reasonText);
+  const legacy = { productId: "9", reasonHash: hash, reasonText, createdAt: "2026-01-01T00:00:00.000Z" };
+  fs.writeFileSync(dataFile, JSON.stringify({ products: {}, claims: { [hash]: legacy }, notes: {} }));
+  await startServer();
+  assert.deepEqual((await request(`/claims/${hash}`)).body, legacy);
+  const added = await request("/claims", { method: "POST", body: JSON.stringify({ productId: "10", reasonText }) });
+  assert.equal(added.response.status, 201);
+  await stopServer();
+  await startServer();
+  assert.deepEqual((await request(`/claims/${hash}?productId=9`)).body, legacy);
+  assert.deepEqual((await request(`/claims/${hash}?productId=10`)).body, added.body);
+});
+
+test("存储失败返回500且不产生虚假成功记录，恢复后可重试", async () => {
+  fs.mkdirSync(dataFile); // This test's private temporary path is deliberately unwritable as a file.
+  const body = JSON.stringify({ serial: "RETRY-DISK", modelName: "Watch" });
+  const failed = await request("/products", { method: "POST", body });
+  assert.equal(failed.response.status, 500);
+  assert.equal(failed.body.error, "internal_error");
+  assert.equal((await request("/health")).response.status, 200);
+  assert.equal((await request(`/products/${serialHash("RETRY-DISK")}`)).response.status, 404);
+  fs.rmdirSync(dataFile);
+  assert.equal((await request("/products", { method: "POST", body })).response.status, 201);
+});
+
