@@ -1,0 +1,48 @@
+Compiled 13 Solidity files successfully (evm target: paris).
+
+
+  frozen interface vectors
+    √ locks the demo warranty length and the shared sample strings
+    √ matches Solidity keccak256 and the committed vectors (384ms)
+
+  ProductRegistry
+    √ initializes the admin and frozen role constants
+    √ registers a complete product before the warranty manager is linked
+    √ rejects unauthorized registration and invalid registration data
+    √ rejects duplicate serial hashes
+    √ starts the warranty only on the first transfer to a role-free account
+    √ rejects unknown products, non-owners and invalid recipients
+    √ links one deployed warranty manager and rejects invalid links
+    √ allows only the linked manager to lock and unlock transfers (137ms)
+    √ records claims only while locked and enforces the claim limit
+    √ reports authenticity and unknown serials without reverting
+    √ uses an inclusive warranty deadline and ignores transfer locks (42ms)
+    √ reverts product getters for unknown ids and rejects Ether
+
+  WarrantyManager
+    deployment and wiring
+      √ starts claim ids at 1 and stores the registry address
+      √ rejects a zero registry address
+      √ reverts getClaim for unknown ids
+      √ never reverts pendingClaimOf for unknown products
+      √ blocks every write until the registry points back at this contract
+    requestWarranty
+      √ opens a pending claim for the owner and locks the product (63ms)
+      √ rejects callers that are not the current owner
+      √ rejects an empty reason hash
+      √ surfaces UnknownProduct from the registry for missing products
+      √ rejects products whose warranty has not started
+      √ allows only one pending claim per product
+      √ assigns increasing claim ids across products
+    resolveClaim
+      √ approves, burns a claim slot and releases the lock
+      √ rejects without burning a claim slot and frees the product
+      √ only service centers may resolve a claim
+      √ stops a requester from resolving their own claim
+      √ reverts for unknown and already resolved claims
+      √ lets the product be claimed again after a rejection
+      √ still approves a claim opened before the warranty expired
+      √ closes the warranty once the claim limit is reached
+
+
+  34 passing (959ms)
