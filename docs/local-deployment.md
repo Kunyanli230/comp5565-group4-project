@@ -1,6 +1,6 @@
 # Local deployment and integration
 
-Use the deployment handoff PR branch until its fixes are merged, then use `main`. The final integration check on 2026-11-13 used commit `e80ef8402f472e94a2a0f42b9e2a5093938d1dc8`, which includes PR #2 and PR #3. It contains both ProductRegistry and WarrantyManager implementations, the deployment scripts and the off-chain service. All commands run from the repository root; use separate terminals for the chain and API.
+Use `main`: PR #4 was merged on 2026-11-16. The latest deployment and integration verification on 2026-11-17 used commit `a58eb7d2f4ddbc5564552ee5e25aad1735718050`, including both business contracts and the deployment/service fixes. It passed 34 contract/interface tests, 16 API/seed tests and 8 lifecycle checks; TypeScript checking also passed. See [the verification record and logs](integration-verification-2026-11-17.md). All commands run from the repository root; use separate terminals for the chain and API.
 
 The off-chain API is implemented with Node.js built-in `node:http` and stores data in a local JSON file. It does not use Express. The API is a separate required process; starting the chain or deploying contracts does not start it.
 
@@ -65,7 +65,7 @@ Frontend code should always read fault text with:
 
 GET /claims/{reasonHash}?productId={claim.productId}
 
-Use the productId returned by the on-chain getClaim result; keep it as a decimal string. POST /claims and the response fields are unchanged. Existing hash-only GET calls continue to work for a unique product. When several products share a reason, hash-only GET returns HTTP 400 / invalid_body rather than guessing the product; add productId and retry. An unknown product association returns 404. The shared OpenAPI v0.1.1 documents this additive query and error handling. This is an explicit integration change for reviewer approval; clients must not treat reasonHash alone as a product identity. Old links already overwritten by the old service cannot be reconstructed from the current file; restore them from a trusted backup or re-post the known product/reason pair. No existing data is silently erased.
+Use the productId returned by the on-chain getClaim result; keep it as a decimal string. POST /claims and the response fields are unchanged. Existing hash-only GET calls continue to work for a unique product. When several products share a reason, hash-only GET returns HTTP 400 / invalid_body rather than guessing the product; add productId and retry. An unknown product association returns 404. The shared OpenAPI v0.1.1 documents this additive query and error handling. This additive integration change was merged in PR #4; clients must not treat reasonHash alone as a product identity. Old links already overwritten by the old service cannot be reconstructed from the current file; restore them from a trusted backup or re-post the known product/reason pair. No existing data is silently erased.
 
 ### Report and presentation alignment
 Report Table 1 and section 5.2.3 should say Node.js built-in HTTP service, not Express. Section 5.2.3 must explicitly start npm run offchain before npm run seed:local. The shared presentation's two deployment slides and bilingual notes describe the updated service. Keep the presentation concise; frontend/wallet completion must only be claimed after those flows are actually tested.

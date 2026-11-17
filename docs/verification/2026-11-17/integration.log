@@ -1,0 +1,23 @@
+ProductRegistry deployed at 0x5FbDB2315678afecb367f032d93F642f64180aa3
+WarrantyManager deployed at 0xe7f1725E7734CE288F8367e1Bb143E90bb3F0512
+Deployment manifest written to deployments/local.json
+PASS: deploy links contracts and leaves roles/products for seed
+PASS: seed clearly fails when API is unavailable
+Granted local roles and registered demo product 1
+serialHash=0xeb28d70354a1cf595385ae6f176a459f71390a488bbc577a07e2898611744c21
+modelId=40525494046322591919394463917510793870049414832583048670706315369933776143009
+PASS: roles, demo product and initial warranty state
+Granted local roles and reused demo product 1
+serialHash=0xeb28d70354a1cf595385ae6f176a459f71390a488bbc577a07e2898611744c21
+modelId=40525494046322591919394463917510793870049414832583048670706315369933776143009
+PASS: repeated seed does not create a duplicate product
+PASS: retailer sale -> warranty request -> service approval -> resale
+Granted local roles and reused demo product 1
+serialHash=0xeb28d70354a1cf595385ae6f176a459f71390a488bbc577a07e2898611744c21
+modelId=40525494046322591919394463917510793870049414832583048670706315369933776143009
+PASS: seeding again preserves ownership and warranty history
+PASS: product, claim and note survive API restart
+ProductRegistry deployed at 0x0165878A594ca255338adfa4d48449f69242Eb8F
+WarrantyManager deployed at 0xa513E6E4b8f2a923D98304ec87F64353C4D5C853
+Deployment manifest written to deployments/local.json
+PASS: redeployment can reuse persisted demo plaintext
