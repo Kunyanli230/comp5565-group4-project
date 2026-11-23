@@ -3,7 +3,7 @@ import { useSearchParams } from 'react-router-dom';
 import { isAddress, ZeroAddress } from 'ethers';
 import { useDapp } from '../context/DappContext';
 import { formatError } from '../lib/utils';
-import { Button, Field, Notice, PageHeader } from '../components/ui';
+import { Address, Button, Field, Notice, PageHeader } from '../components/ui';
 import { LoadState, parseId, ProductSummary, sameAddress, useProduct, WriteAccess } from './data';
 
 export default function Transfer() {
@@ -39,7 +39,9 @@ export default function Transfer() {
       <Field label="Recipient wallet"><input required value={recipient} onChange={e => setRecipient(e.target.value)} placeholder="0x…" /></Field>
       <div className="inline-actions"><Button type="button" className="button button-secondary" onClick={() => setRecipient(config?.accounts.customer ?? '')}>Use demo customer</Button><Button type="button" className="button button-secondary" onClick={() => setRecipient(config?.accounts.resaleBuyer ?? '')}>Use demo resale buyer</Button></div>
       <LoadState {...state} />
-      {state.product && !!account && !isOwner && <Notice tone="error">Only the current product owner can transfer this product. Switch to that wallet first.</Notice>}
+      {state.product && !!account && !isOwner && (success
+        ? <Notice>Transfer complete. The current owner is <Address value={state.product.owner} />. That owner's wallet is required for any further transfer.</Notice>
+        : <Notice tone="error">Only the current product owner can transfer this product. Switch to that wallet first.</Notice>)}
       {state.product?.transferLocked && <Notice tone="error">An open warranty claim locks this product. The service center must resolve the claim before ownership can change.</Notice>}
       {error && <Notice tone="error">{error}</Notice>}{success && <Notice tone="success">{success}</Notice>}
       <Button type="submit" disabled={!allowed || busy}>Transfer ownership →</Button>
