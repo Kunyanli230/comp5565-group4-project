@@ -5,6 +5,8 @@ import registryArtifact from '../generated/ProductRegistry.json';
 import warrantyArtifact from '../generated/WarrantyManager.json';
 import { CHAIN_ID, ROLE_NAME, roleHash, ZERO_BYTES32 } from '../shared';
 import { formatError, sameAddress } from '../lib/utils';
+import { assertSameChainBlock, extractTransactionHash, failureOutcome, findKnownReceipt, isCancelledReplacement, matchingReceipt,
+  replacementReceipt, transactionDiagnostic, validTransactionHash, type TransactionDiagnostic, type TransactionOutcome, type TransactionStage } from '../lib/transaction';
 
 interface Wallet extends Eip1193Provider {
   on?: (event: string, handler: (...args: unknown[]) => void) => void;
@@ -12,12 +14,16 @@ interface Wallet extends Eip1193Provider {
 }
 declare global { interface Window { ethereum?: Wallet } }
 export interface WalletRoles { manufacturer: boolean; retailer: boolean; serviceCenter: boolean; admin: boolean }
-export interface TransactionState { phase: 'idle' | 'signing' | 'pending' | 'success' | 'error'; label: string; hash?: string; message?: string }
+export interface TransactionState {
+  phase: 'idle' | 'signing' | 'pending' | 'success' | 'error'; label: string; hash?: string; message?: string;
+  outcome?: TransactionOutcome; diagnostic?: TransactionDiagnostic;
+}
 interface DappContextValue {
   config: DeploymentFile | null; provider: JsonRpcProvider | null; registry: Contract | null; warranty: Contract | null;
   account: string; chainId: number | null; roles: WalletRoles; rolesLoading: boolean; rolesError: string; ready: boolean; error: string; busy: boolean;
   tx: TransactionState; revision: number;
   connect: () => Promise<void>; switchNetwork: () => Promise<void>; reload: () => Promise<void>;
+  resetTransaction: () => boolean; recheckTransaction: () => Promise<void>;
   transact: (label: string, submit: (registry: Contract, warranty: Contract) => Promise<ContractTransactionResponse>) => Promise<TransactionReceipt | null>;
 }
 const emptyRoles: WalletRoles = { manufacturer: false, retailer: false, serviceCenter: false, admin: false };
@@ -55,8 +61,13 @@ export function DappProvider({children}: {children: ReactNode}) {
   const providerRef = useRef<JsonRpcProvider | null>(null);
   const setupRequest = useRef<AbortController | null>(null);
   const activeWrite = useRef(false);
+  const transactionRef = useRef<TransactionState>({phase: 'idle', label: ''});
   const walletRevision = useRef(0);
   const configGeneration = useRef(0);
+  const publishTransaction = useCallback((next: TransactionState) => {
+    transactionRef.current = next;
+    if (mounted.current) setTx(next);
+  }, []);
 
   const syncWallet = useCallback(async () => {
     const epoch = ++walletRevision.current;
@@ -175,46 +186,159 @@ export function DappProvider({children}: {children: ReactNode}) {
     finally { if (mounted.current) setConnecting(false); }
   }, [config?.rpcUrl, syncWallet]);
 
+  const resetTransaction = useCallback(() => {
+    if (activeWrite.current) return false;
+    publishTransaction({phase: 'idle', label: ''});
+    return true;
+  }, [publishTransaction]);
+
+  const recheckTransaction = useCallback(async () => {
+    const previous = transactionRef.current;
+    const readProvider = providerRef.current;
+    if (activeWrite.current || !readProvider || !validTransactionHash(previous.hash)) return;
+    activeWrite.current = true;
+    publishTransaction({...previous, phase: 'pending', message: 'Checking this hash on the local RPC. No transaction is being sent.'});
+    try {
+      const receipt = matchingReceipt(await readProvider.getTransactionReceipt(previous.hash), previous.hash);
+      if (!receipt) {
+        publishTransaction({...previous, phase: 'error', outcome: 'confirmation_unknown', message: 'The local RPC has no confirmed receipt for this hash yet. Check the product state before trying again.'});
+      } else if (receipt.status === 1) {
+        publishTransaction({...previous, phase: 'success', outcome: undefined, hash: receipt.hash, message: `Confirmed in block ${receipt.blockNumber}, verified on the local RPC.`});
+        if (mounted.current) setRevision(value => value + 1);
+      } else {
+        publishTransaction({...previous, phase: 'error', outcome: 'reverted', hash: receipt.hash, message: `The transaction was mined in block ${receipt.blockNumber} but reverted. The on-chain operation did not succeed.`});
+      }
+    } catch (err) {
+      publishTransaction({...previous, phase: 'error', outcome: 'confirmation_unknown', message: 'The local RPC could not verify this hash. Its status is unknown; do not submit it again until checked.', diagnostic: transactionDiagnostic(err, 'confirmation', previous.diagnostic?.account ?? account, config?.chainId ?? null, previous.hash)});
+    } finally { activeWrite.current = false; }
+  }, [account, config?.chainId, publishTransaction]);
+
   const transact = useCallback(async (label: string, submit: (registry: Contract, warranty: Contract) => Promise<ContractTransactionResponse>): Promise<TransactionReceipt | null> => {
     if (activeWrite.current) return null;
     activeWrite.current = true;
-    if (mounted.current) setTx({phase: 'signing', label, message: 'Check the request in your wallet.'});
+    publishTransaction({phase: 'signing', label, message: 'Checking the wallet and local chain before signing.'});
     let walletProvider: BrowserProvider | null = null;
+    let stage: TransactionStage = 'preflight';
+    let knownHash: string | undefined;
+    let walletError: unknown;
+    let trackingError: unknown;
+    let finished = false;
+    const walletEpoch = walletRevision.current;
+    const deploymentEpoch = configGeneration.current;
     try {
       if (!ready || !config || !providerRef.current) throw new Error('The local contracts are not ready. Check deployment and refresh.');
       if (!window.ethereum || !account) throw new Error('Connect your wallet before submitting.');
-      const network = await window.ethereum.request({method: 'eth_chainId'});
-      if (BigInt(String(network)) !== BigInt(config.chainId)) throw new Error(`Switch your wallet to Hardhat Local (${config.chainId}) before submitting.`);
-      const accounts = await window.ethereum.request({method: 'eth_accounts'}) as string[];
-      if (!sameAddress(accounts[0], account)) { await syncWallet(); throw new Error('The wallet account changed. Check the selected account and submit again.'); }
-      const codes = await Promise.all([providerRef.current.getCode(config.productRegistry), providerRef.current.getCode(config.warrantyManager)]);
+      const wallet = window.ethereum;
+      const readProvider = providerRef.current;
+      const checkWallet = async () => {
+        const [network, accounts] = await Promise.all([
+          wallet.request({method: 'eth_chainId'}), wallet.request({method: 'eth_accounts'}) as Promise<string[]>,
+        ]);
+        if (BigInt(String(network)) !== BigInt(config.chainId)) throw new Error(`Switch your wallet to Hardhat Local (${config.chainId}) before submitting.`);
+        if (!sameAddress(accounts[0], account) || walletRevision.current !== walletEpoch) {
+          await syncWallet(); throw new Error('The wallet account or network changed. Check the selected account and submit again.');
+        }
+        if (configGeneration.current !== deploymentEpoch || providerRef.current !== readProvider) throw new Error('The local configuration changed. Refresh before submitting.');
+      };
+      await checkWallet();
+      const codes = await Promise.all([readProvider.getCode(config.productRegistry), readProvider.getCode(config.warrantyManager)]);
       if (codes.some(code => code === '0x')) throw new Error('The local chain was reset. Redeploy the contracts and refresh before submitting.');
-      walletProvider = new BrowserProvider(window.ethereum);
+      await assertSameChainBlock((method, params) => readProvider.send(method, params), wallet);
+
+      let reportBroadcast: () => void = () => {};
+      const broadcast = new Promise<void>(resolve => { reportBroadcast = resolve; });
+      const rememberHash = (hash: string) => {
+        if (!validTransactionHash(hash) || finished) return;
+        knownHash = hash;
+        stage = 'confirmation';
+        publishTransaction({phase: 'pending', label, hash, message: 'Submitted. Verifying confirmation on the local chain.'});
+        reportBroadcast();
+      };
+      // Capture only the send result/error. No request parameters, signatures,
+      // wallet state dumps or private data are retained in diagnostics.
+      const signingWallet: Eip1193Provider = {request: async args => {
+        if (args.method !== 'eth_sendTransaction') return wallet.request(args);
+        // Account changes during metadata/RPC awaits must not silently change
+        // which wallet signs. This runs immediately before the actual send.
+        stage = 'preflight';
+        await checkWallet();
+        stage = 'wallet';
+        try {
+          const result = await wallet.request(args);
+          if (validTransactionHash(result)) rememberHash(result);
+          return result;
+        } catch (err) { walletError = err; throw err; }
+      }};
+      walletProvider = new BrowserProvider(signingWallet);
       const signer = await walletProvider.getSigner(account);
       const writeRegistry = new Contract(config.productRegistry, registryArtifact.abi, signer);
       const writeWarranty = new Contract(config.warrantyManager, warrantyArtifact.abi, signer);
-      const response = await submit(writeRegistry, writeWarranty);
-      if (mounted.current) setTx({phase: 'pending', label, hash: response.hash, message: 'Submitted. Waiting for the local chain to confirm.'});
-      let receipt: TransactionReceipt | null;
-      try { receipt = await response.wait(); }
-      catch (err) {
-        // A wallet speed-up replaces a transaction hash, but is still a success
-        // when its replacement receipt is successful. Cancellation is distinct.
-        const replacement = err as {code?: string; cancelled?: boolean; receipt?: TransactionReceipt; replacement?: {hash?: string}};
-        if (replacement.code !== 'TRANSACTION_REPLACED' || replacement.cancelled || !replacement.receipt) throw err;
-        receipt = replacement.receipt;
+      stage = 'wallet';
+      publishTransaction({phase: 'signing', label, message: 'Check the request in your wallet.'});
+
+      const walletResult = (async () => {
+        try {
+          const response = await submit(writeRegistry, writeWarranty);
+          rememberHash(response.hash);
+          let receipt: TransactionReceipt | null;
+          try { receipt = await response.wait(1, 20000); }
+          catch (err) {
+            const replacement = replacementReceipt<TransactionReceipt>(err);
+            if (!replacement) throw err;
+            rememberHash(replacement.hash);
+            receipt = replacement;
+          }
+          return {kind: 'receipt' as const, source: 'wallet' as const, receipt};
+        } catch (err) {
+          trackingError = err;
+          if (!isCancelledReplacement(err)) {
+            const hash = extractTransactionHash(err);
+            if (hash) rememberHash(hash);
+          }
+          return {kind: 'wallet-error' as const, error: err};
+        }
+      })();
+      // This observer is independent of MetaMask's getTransaction/receipt
+      // tracking, including the interval before ethers returns its response.
+      // It only reads a known hash; it never retries a wallet send.
+      const localResult = broadcast.then(async () => ({kind: 'receipt' as const, source: 'local' as const, receipt:
+        await findKnownReceipt(() => knownHash, hash => readProvider.getTransactionReceipt(hash), () => finished),
+      }));
+      let result = await Promise.race([walletResult, localResult]);
+      if (result.kind === 'wallet-error') {
+        // A cancellation receipt belongs to a different operation and must
+        // never turn this operation into a success.
+        if (isCancelledReplacement(result.error) || !knownHash) throw result.error;
+        const recovered = await localResult;
+        if (!recovered.receipt) throw result.error;
+        result = recovered;
       }
-      if (!receipt || receipt.status !== 1) throw new Error('The transaction was mined but reverted. The on-chain operation did not succeed.');
-      if (mounted.current) { setTx({phase: 'success', label, hash: receipt.hash, message: `Confirmed in block ${receipt.blockNumber}.`}); setRevision(value => value + 1); }
+      const receipt = result.receipt;
+      if (!receipt) throw new Error('The local RPC has not confirmed this transaction yet. Check its hash and product state before submitting again.');
+      if (!knownHash || !matchingReceipt(receipt, knownHash)) throw new Error('The returned receipt could not be matched to this transaction. Verify the hash on the local RPC.');
+      if (receipt.status === 0) {
+        publishTransaction({phase: 'error', label, hash: receipt.hash, outcome: 'reverted', message: `The transaction was mined in block ${receipt.blockNumber} but reverted. The on-chain operation did not succeed.`, diagnostic: transactionDiagnostic(walletError, 'confirmation', account, config.chainId, receipt.hash)});
+        return null;
+      }
+      publishTransaction({phase: 'success', label, hash: receipt.hash,
+        message: `Confirmed in block ${receipt.blockNumber}${result.source === 'local' ? ', verified on the local RPC' : ''}.`,
+        diagnostic: transactionDiagnostic(walletError ?? trackingError, 'confirmation', account, config.chainId, receipt.hash),
+      });
+      if (mounted.current) setRevision(value => value + 1);
       return receipt;
     } catch (err) {
-      if (mounted.current) setTx({phase: 'error', label, message: formatError(err, [new Contract(ZeroAddress, registryArtifact.abi).interface, new Contract(ZeroAddress, warrantyArtifact.abi).interface])});
+      const outcome = failureOutcome(err, stage, knownHash);
+      const detail = formatError(err, [new Contract(ZeroAddress, registryArtifact.abi).interface, new Contract(ZeroAddress, warrantyArtifact.abi).interface]);
+      const message = isCancelledReplacement(err) ? 'This operation was replaced or cancelled in the wallet. A successful cancellation does not complete this operation.'
+        : outcome === 'confirmation_unknown' ? 'The wallet returned a transaction hash, but confirmation could not be verified. Check this hash and the product state before submitting again.'
+        : outcome === 'submission_unknown' ? 'The wallet or RPC reported an error while submitting. Submission status is unknown; check the product state before trying again.' : detail;
+      publishTransaction({phase: 'error', label, hash: knownHash, outcome, message, diagnostic: transactionDiagnostic(walletError ?? err, stage, account, config?.chainId ?? null, knownHash)});
       return null;
-    } finally { activeWrite.current = false; walletProvider?.destroy(); }
-  }, [account, config, ready, syncWallet]);
+    } finally { finished = true; activeWrite.current = false; walletProvider?.destroy(); }
+  }, [account, config, ready, syncWallet, publishTransaction]);
 
   const busy = connecting || tx.phase === 'signing' || tx.phase === 'pending';
-  return <DappContext.Provider value={{config, provider, registry, warranty, account, chainId, roles, rolesLoading, rolesError, ready, error: setupError || walletError, busy, tx, revision, connect, switchNetwork, reload, transact}}>{children}</DappContext.Provider>;
+  return <DappContext.Provider value={{config, provider, registry, warranty, account, chainId, roles, rolesLoading, rolesError, ready, error: setupError || walletError, busy, tx, revision, connect, switchNetwork, reload, resetTransaction, recheckTransaction, transact}}>{children}</DappContext.Provider>;
 }
 export function useDapp(): DappContextValue {
   const context = useContext(DappContext);

@@ -240,6 +240,18 @@ input::placeholder,textarea::placeholder { color: #80889b; }
 .transaction-toast strong { font-size: 13px; }
 .transaction-hash { overflow-wrap: anywhere; width: 100%; }
 .transaction-toast .icon-button { min-height: 32px; min-width: 32px; }
+.transaction-toast { max-height: calc(100dvh - 32px); overflow-y: auto; }
+.tx-uncertain { border-color: #d5b878; }
+.tx-uncertain .transaction-icon { color: #8d651e; background: #fff3d9; }
+.transaction-toast .receipt-verdict { font-weight: 700; color: inherit; }
+.transaction-actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 10px; }
+.transaction-actions .text-button { font-size: 11px; min-height: 30px; }
+.transaction-diagnostics { margin-top: 10px; font-size: 11px; }
+.transaction-diagnostics summary { cursor: pointer; color: #5b667f; }
+.transaction-diagnostics dl { display: grid; gap: 5px; margin: 8px 0 0; }
+.transaction-diagnostics dl>div { min-width: 0; }
+.transaction-diagnostics dt { color: #6b7589; }
+.transaction-diagnostics dd { margin: 0; overflow-wrap: anywhere; }
 .pagination .button { min-height: 36px; font-size: 11px; }
 .checkbox-label { font-size: 12px; color: #546282; }
 .setup-guide { font-size: 13px; }

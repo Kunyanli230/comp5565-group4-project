@@ -10,7 +10,7 @@ import { Button, Field, Notice, PageHeader } from '../components/ui';
 import { productPath, WriteAccess } from './data';
 
 export default function Register() {
-  const { config, registry, account, chainId, roles, ready, busy, transact } = useDapp();
+  const { config, registry, account, chainId, roles, ready, busy, transact, resetTransaction } = useDapp();
   const [serial, setSerial] = useState('');
   const [modelName, setModelName] = useState('');
   const [description, setDescription] = useState('');
@@ -20,9 +20,11 @@ export default function Register() {
   const [error, setError] = useState('');
   const [working, setWorking] = useState(false);
   const [created, setCreated] = useState('');
+  const [confirmationNote, setConfirmationNote] = useState('');
   const [demoLoading, setDemoLoading] = useState(false);
   const [demoInfo, setDemoInfo] = useState('');
   const demoRequest = useRef(0);
+  const submitLock = useRef(false);
   const allowed = ready && !!account && chainId === config?.chainId && roles.manufacturer;
   useEffect(() => {
     demoRequest.current++;
@@ -31,12 +33,12 @@ export default function Register() {
   }, [registry, config]);
   function formEdited() {
     // Do not overwrite a manually edited form when an older RPC read finishes.
-    demoRequest.current++; setDemoLoading(false); setDemoInfo('');
+    demoRequest.current++; setDemoLoading(false); setDemoInfo(''); setCreated(''); setConfirmationNote(''); setError('');
   }
   async function demo() {
     if (!ready || !registry || !config || busy || working || demoLoading) return;
     const request = ++demoRequest.current;
-    setDemoLoading(true); setError(''); setCreated(''); setDemoInfo('');
+    setDemoLoading(true); setError(''); setCreated(''); setConfirmationNote(''); setDemoInfo('');
     try {
       const demoRetailer = config.accounts.retailer;
       if (!isAddress(demoRetailer) || demoRetailer.toLowerCase() === ZeroAddress) throw new Error('The deployment has no valid demo retailer address. Refresh the local configuration.');
@@ -51,8 +53,11 @@ export default function Register() {
     } finally { if (demoRequest.current === request) setDemoLoading(false); }
   }
   async function submit(event: FormEvent) {
-    event.preventDefault(); setError(''); setCreated('');
-    if (!allowed || !config || !registry || demoLoading) return;
+    event.preventDefault();
+    if (!allowed || !config || !registry || demoLoading || busy || submitLock.current) return;
+    if (!resetTransaction()) return;
+    submitLock.current = true;
+    setError(''); setCreated(''); setConfirmationNote('');
     setWorking(true);
     try {
       const hash = serialHash(serial);
@@ -75,13 +80,27 @@ export default function Register() {
         }
       }
       if (record.serialHash.toLowerCase() !== hash.toLowerCase() || record.modelId !== modelId || modelIdFromName(record.modelName) !== modelId) throw new Error('The metadata API returned a fingerprint that does not match your input.');
-      const receipt = await transact('Register product', r => r.registerProduct(hash, BigInt(modelId), BigInt(duration), BigInt(maxClaims), retailer));
+      const receipt = await transact(`Register ${serial.trim()}`, r => r.registerProduct(hash, BigInt(modelId), BigInt(duration), BigInt(maxClaims), retailer));
       if (receipt) {
-        const id = BigInt(await registry.productIdBySerial(hash));
-        setCreated(id.toString());
+        // The mined event is authoritative and does not depend on another RPC
+        // read succeeding after the transaction has already been confirmed.
+        let registeredId: bigint | null = null;
+        for (const log of receipt.logs) {
+          if (log.address.toLowerCase() !== config.productRegistry.toLowerCase()) continue;
+          try {
+            const event = registry.interface.parseLog(log);
+            if (event?.name === 'Registered' && String(event.args.serialHash).toLowerCase() === hash.toLowerCase()) registeredId = BigInt(event.args.productId);
+          } catch { /* Other logs are not registration events. */ }
+        }
+        if (registeredId === null) {
+          try { const id = BigInt(await registry.productIdBySerial(hash)); if (id > 0n) registeredId = id; }
+          catch { /* A display refresh failure does not reverse the receipt. */ }
+        }
+        if (registeredId !== null) setCreated(registeredId.toString());
+        else setConfirmationNote(`Registration confirmed in block ${receipt.blockNumber}. The product ID could not be refreshed. Open Overview to find the product; do not submit this serial again.`);
       }
     } catch (error) { setError(formatError(error)); }
-    finally { setWorking(false); }
+    finally { submitLock.current = false; setWorking(false); }
   }
   return <div className="stack">
     <PageHeader eyebrow="MANUFACTURER WORKSPACE" title="Register a product" description="Create a product passport and assign its first owner. The warranty begins when the retailer sells to a customer." />
@@ -102,6 +121,7 @@ export default function Register() {
         <Field label="Retailer wallet address" hint="This is the product’s first owner, not the signing wallet. Keep the manufacturer account selected in MetaMask."><input required value={retailer} onChange={e => setRetailer(e.target.value)} placeholder={config?.accounts.retailer ?? '0x…'} /></Field>
         {error && <Notice tone="error">{error}</Notice>}
         {created && <Notice tone="success">Product #{created} registered. <Link to={productPath(created)}>View its passport →</Link></Notice>}
+        {confirmationNote && <Notice>{confirmationNote}</Notice>}
         <div className="form-footer"><span className="muted">No ETH payment is required. Network gas applies.</span><Button disabled={!allowed || busy || working || demoLoading} type="submit">{working ? 'Registering…' : 'Register product →'}</Button></div>
       </form>
       <aside className="card stack"><span className="eyebrow">HOW IT WORKS</span><h2>A verifiable beginning</h2><ol className="steps"><li>Save the product information to the metadata service.</li><li>Record its fingerprint and warranty terms on-chain.</li><li>Assign the product to a registered retailer.</li></ol><Notice>Use demo values checks the current chain for an unused serial. Filling the form does not register a product; confirm Register product in your manufacturer wallet to finish.</Notice></aside>
