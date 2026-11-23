@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useDapp } from '../context/DappContext';
 import { createApi } from '../lib/api';
@@ -11,7 +11,8 @@ type ClaimRow = { claim: Claim; reason: string; warning: string };
 const PAGE_SIZE = 20n;
 
 export default function Service() {
-  const { config, warranty, account, chainId, roles, ready, busy, revision, transact } = useDapp();
+  const { config, warranty, account, chainId, roles, ready, busy, revision, transact, resetTransaction } = useDapp();
+  const submitLock = useRef(false);
   const [page, setPage] = useState(0);
   const [rows, setRows] = useState<ClaimRow[]>([]);
   const [total, setTotal] = useState(0n);
@@ -50,7 +51,8 @@ export default function Service() {
   }, [warranty, config, revision, page]);
   const allowed = ready && !!account && chainId === config?.chainId && roles.serviceCenter;
   async function resolve(claim: Claim, approved: boolean) {
-    if (!allowed || !config || !warranty || working || busy) return;
+    if (!allowed || !config || !warranty || working || busy || submitLock.current || !resetTransaction()) return;
+    submitLock.current = true;
     setError(''); setSuccess(''); setWorking(true);
     try {
       const current = mapClaim(await warranty.getClaim(claim.id));
@@ -65,7 +67,7 @@ export default function Service() {
       const receipt = await transact(`${approved ? 'Approve' : 'Reject'} claim #${claim.id}`, (_r, w) => w.resolveClaim(claim.id, approved, hash));
       if (receipt) { setSuccess(`Claim #${claim.id} ${approved ? 'approved' : 'rejected'}. Product transfers are unlocked.`); setNotes(s => ({ ...s, [claim.id.toString()]: '' })); }
     } catch (error) { setError(formatError(error)); }
-    finally { setWorking(false); }
+    finally { submitLock.current = false; setWorking(false); }
   }
   const visible = rows.filter(row => !pendingOnly || row.claim.status === 1n);
   return <div className="stack">

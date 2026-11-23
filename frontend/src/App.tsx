@@ -48,12 +48,34 @@ export default function App() {
   const [guide, setGuide] = useState(false);
   const [walletError, setWalletError] = useState('');
   const [hiddenTx, setHiddenTx] = useState('');
+  const [checkingTx, setCheckingTx] = useState(false);
+  const [copiedHash, setCopiedHash] = useState(false);
+  const [copiedDiagnostic, setCopiedDiagnostic] = useState(false);
+  useEffect(() => { setHiddenTx(''); setCopiedHash(false); setCopiedDiagnostic(false); }, [dapp.tx]);
   const current = links.find(item => item.path === pathname)?.label ?? 'Product passport';
   const role = !dapp.account ? 'Read-only visitor' : dapp.rolesLoading ? 'Checking permissions…' : dapp.rolesError ? 'Permissions unavailable' : Object.entries(dapp.roles).filter(([, v]) => v).map(([key]) => key === 'serviceCenter' ? 'Service center' : key).join(' · ') || 'Product owner';
   const walletOnLocalChain = dapp.chainId === 31337;
   const networkLabel = !dapp.account ? 'Local RPC · 31337' : walletOnLocalChain ? 'Wallet · Hardhat 31337' : `Wallet · ${dapp.chainId ?? 'unknown'}`;
   async function connect() { try { setWalletError(''); await dapp.connect(); } catch (err) { setWalletError(err instanceof Error ? err.message : 'Could not connect wallet.'); } }
   async function switchChain() { try { setWalletError(''); await dapp.switchNetwork(); } catch (err) { setWalletError(err instanceof Error ? err.message : 'Could not switch network.'); } }
+  const uncertainTx = dapp.tx.outcome === 'confirmation_unknown' || dapp.tx.outcome === 'submission_unknown';
+  async function checkTransaction() {
+    if (checkingTx || dapp.busy) return;
+    setCheckingTx(true);
+    try { await dapp.recheckTransaction(); }
+    finally { setCheckingTx(false); }
+  }
+  async function copyTransactionHash() {
+    if (!dapp.tx.hash) return;
+    try { await navigator.clipboard.writeText(dapp.tx.hash); setCopiedHash(true); }
+    catch { setWalletError('Could not copy the transaction hash. You can select the hash in the transaction details.'); }
+  }
+  async function copyTransactionDetails() {
+    const details = {capturedAt: new Date().toISOString(), action: dapp.tx.label, phase: dapp.tx.phase,
+      outcome: dapp.tx.outcome, hash: dapp.tx.hash, message: dapp.tx.message, diagnostic: dapp.tx.diagnostic};
+    try { await navigator.clipboard.writeText(JSON.stringify(details, null, 2)); setCopiedDiagnostic(true); }
+    catch { setWalletError('Could not copy the details. The transaction hash and filtered error are shown below.'); }
+  }
   const txKey = `${dapp.tx.phase}:${dapp.tx.hash ?? ''}:${dapp.tx.label}`;
   return <div className="app-shell">
     <a href="#main" className="skip-link">Skip to content</a>
@@ -65,7 +87,7 @@ export default function App() {
       <nav aria-label="Main navigation">{links.map(({ path, label, icon: Icon }) => <NavLink key={path} to={path} end={path === '/'} onClick={() => setMenuOpen(false)} className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}><Icon size={19} strokeWidth={1.7} />{label}<ChevronRight size={14} className="nav-chevron" /></NavLink>)}</nav>
       <div className="sidebar-bottom"><div className="sidebar-note"><ShieldCheck size={24} /><h3>A history you can trust.</h3><p>From the first owner to the next.<br />Every step, verifiable.</p><Link to={ROUTES.verify}>Explore a product <ArrowUpRight size={15} /></Link></div>
         <button className="help-button" onClick={() => setGuide(!guide)}><CircleHelp size={18} /> Local setup & demo <ArrowUpRight size={14} /></button>
-        <div className="sidebar-footer"><span className={`status-dot ${dapp.ready ? 'online' : ''}`} />{dapp.ready ? 'Local chain connected' : 'Waiting for local chain'}<span>v1.0</span></div></div>
+        <div className="sidebar-footer"><span className={`status-dot ${dapp.ready ? 'online' : ''}`} />{dapp.ready ? 'Local chain connected' : 'Waiting for local chain'}<span>v1.1</span></div></div>
     </aside>
     <div className="main-shell">
       <header className="topbar"><div className="breadcrumb"><button ref={menuButtonRef} className="mobile-menu icon-button" aria-label="Open navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)}><Menu size={20} /></button><span className="breadcrumb-home">Workspace</span><ChevronRight size={14} /><strong>{current}</strong></div><div className="topbar-actions"><span className="network-pill" title="Transactions require the connected wallet to use Hardhat Local (31337)."><span className={`status-dot ${dapp.ready && (!dapp.account || walletOnLocalChain) ? 'online' : ''}`} />{networkLabel}</span><button className="wallet-button" onClick={connect} disabled={dapp.busy}><Wallet size={16} />{dapp.account ? `${dapp.account.slice(0, 6)}…${dapp.account.slice(-4)}` : 'Connect wallet'}</button><span className="workspace-profile" aria-label="Group 4 workspace">G4</span></div></header>
@@ -79,6 +101,30 @@ export default function App() {
       </main>
       <footer className="app-footer"><span><Box size={14} /> Origin · Product provenance & warranty</span><span>{role}<span className="footer-separator">/</span>COMP5565 · Group 04</span></footer>
     </div>
-    {dapp.tx.phase !== 'idle' && hiddenTx !== txKey && <section className={`transaction-toast tx-${dapp.tx.phase}`} role="status" aria-live="polite"><div className="transaction-icon">{dapp.tx.phase === 'success' ? <CheckCircle2 /> : dapp.tx.phase === 'error' ? <X /> : <LoaderCircle className="spin" />}</div><div><strong>{dapp.tx.label}</strong><p>{dapp.tx.message || ({ signing: 'Confirm this transaction in your wallet.', pending: 'Transaction sent. Waiting for confirmation…', success: 'Confirmed on the local chain.', error: 'The transaction did not complete.', idle: '' }[dapp.tx.phase])}</p>{dapp.tx.hash && <code className="transaction-hash" title={dapp.tx.hash}>{dapp.tx.hash}</code>}</div><button className="icon-button" onClick={() => setHiddenTx(txKey)} aria-label="Dismiss transaction status"><X size={15} /></button></section>}
+    {dapp.tx.phase !== 'idle' && hiddenTx !== txKey && <section className={`transaction-toast ${uncertainTx ? 'tx-uncertain' : `tx-${dapp.tx.phase}`}`} role="status" aria-live="polite">
+      <div className="transaction-icon">{dapp.tx.phase === 'success' ? <CheckCircle2 /> : uncertainTx ? <Clock3 /> : dapp.tx.phase === 'error' ? <X /> : <LoaderCircle className="spin" />}</div>
+      <div>
+        <strong>Last action: {dapp.tx.label}</strong>
+        <p>{dapp.tx.message}</p>
+        {dapp.tx.phase === 'success' && <p className="receipt-verdict">On-chain receipt: SUCCESS</p>}
+        {dapp.tx.outcome === 'reverted' && <p className="receipt-verdict">On-chain receipt: REVERTED</p>}
+        {uncertainTx && <p className="receipt-verdict">Outcome not confirmed. Verify the existing transaction before submitting again.</p>}
+        {dapp.tx.hash && <>
+          <code className="transaction-hash" title={dapp.tx.hash}>{dapp.tx.hash}</code>
+          <div className="transaction-actions">
+            <button type="button" className="text-button" disabled={checkingTx || dapp.busy} onClick={() => void checkTransaction()}>{checkingTx ? 'Checking receipt…' : 'Verify on-chain result'}</button>
+            <button type="button" className="text-button" onClick={() => void copyTransactionHash()}>{copiedHash ? 'Hash copied' : 'Copy hash'}</button>
+          </div>
+        </>}
+        {dapp.tx.diagnostic && <details className="transaction-diagnostics"><summary>Transaction details</summary><button type="button" className="text-button" onClick={() => void copyTransactionDetails()}>{copiedDiagnostic ? 'Details copied' : 'Copy diagnostics'}</button><dl>
+          <div><dt>Account</dt><dd><Address value={dapp.tx.diagnostic.account} /></dd></div>
+          <div><dt>Chain ID</dt><dd>{dapp.tx.diagnostic.chainId ?? 'Unknown'}</dd></div>
+          <div><dt>Stage</dt><dd>{dapp.tx.diagnostic.stage}</dd></div>
+          {dapp.tx.diagnostic.code !== undefined && <div><dt>Error code</dt><dd>{dapp.tx.diagnostic.code}</dd></div>}
+          {dapp.tx.diagnostic.message && <div><dt>Details</dt><dd>{dapp.tx.diagnostic.message}</dd></div>}
+        </dl></details>}
+      </div>
+      <button className="icon-button" onClick={() => setHiddenTx(txKey)} aria-label="Dismiss transaction status"><X size={15} /></button>
+    </section>}
   </div>;
 }
